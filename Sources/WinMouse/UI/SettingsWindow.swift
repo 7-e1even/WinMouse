@@ -19,11 +19,14 @@ final class SettingsWindow: NSObject {
     private var statusLabel: NSTextField!
     private var authButton: NSButton!
     private var enableCheck: NSButton!
+    private var mouseOnlyCheck: NSButton!
     private var modeSegments: NSSegmentedControl!
     private var multiplierLabel: NSTextField!
     private var multiplierSlider: NSSlider!
     private var dpiAnchorCheck: NSButton!
     private var dpiPopUp: NSPopUpButton!
+    private var pollHzPopUp: NSPopUpButton!
+    private var pollHintLabel: NSTextField!
     private var curveView: CurveGraphView!
     private var monitorLabel: NSTextField!
 
@@ -37,6 +40,7 @@ final class SettingsWindow: NSObject {
     private var loginCheck: NSButton!
 
     private static let dpiOptions: [Double] = [400, 800, 1200, 1600, 3200, 6400]
+    private static let pollHzOptions: [Double] = [125, 250, 500, 1000, 2000, 4000, 8000]
 
     func show() {
         if window == nil { window = makeWindow() }
@@ -82,7 +86,8 @@ final class SettingsWindow: NSObject {
             monitorLabel.stringValue = String(format: "移动鼠标查看实时速度与增益 ｜ 灵敏度 ×%.2f", s.multiplier)
         } else if s.mode == .windowsCurve {
             let shape = TransferFunction(mode: .windowsCurve, multiplier: 1,
-                                         dpi: s.dpi, dpiCompensation: s.dpiCompensation).gain(speed: v)
+                                         dpi: s.dpi, dpiCompensation: s.dpiCompensation,
+                                         pollHz: s.effectivePollHz).gain(speed: v)
             let total = s.transferFunction.gain(speed: v)
             monitorLabel.stringValue = String(format: "速度 %.2f counts/ms ≈ %.1f 英寸/秒 ｜ 曲线 ×%.2f ｜ 总增益 ×%.2f",
                                               v, v * 1000 / s.dpi, shape, total)
@@ -106,6 +111,10 @@ final class SettingsWindow: NSObject {
         (NSApp.delegate as? AppDelegate)?.refreshState()
     }
 
+    @objc private func mouseOnlyChanged(_ sender: NSButton) {
+        Settings.shared.mouseOnly = (sender.state == .on)
+    }
+
     @objc private func pickMode(_ sender: NSSegmentedControl) {
         Settings.shared.mode = (sender.selectedSegment == 0) ? .windowsCurve : .linear
         syncControls()
@@ -126,6 +135,13 @@ final class SettingsWindow: NSObject {
     @objc private func dpiChanged(_ sender: NSPopUpButton) {
         if let v = sender.selectedItem?.representedObject as? Double {
             Settings.shared.dpi = v
+            curveView.needsDisplay = true
+        }
+    }
+
+    @objc private func pollHzChanged(_ sender: NSPopUpButton) {
+        if let v = sender.selectedItem?.representedObject as? Double {
+            Settings.shared.pollHz = v
             curveView.needsDisplay = true
         }
     }
@@ -207,6 +223,8 @@ final class SettingsWindow: NSObject {
 
         enableCheck = NSButton(checkboxWithTitle: "启用（接管鼠标移动）",
                                target: self, action: #selector(enableChanged(_:)))
+        mouseOnlyCheck = NSButton(checkboxWithTitle: "仅接管鼠标，放行触控板（推荐 MacBook 开启）",
+                                  target: self, action: #selector(mouseOnlyChanged(_:)))
 
         modeSegments = NSSegmentedControl(labels: ["Windows 曲线（EPP 开）", "纯线性（EPP 关）"],
                                           trackingMode: .selectOne,
@@ -214,7 +232,7 @@ final class SettingsWindow: NSObject {
                                           action: #selector(pickMode(_:)))
 
         multiplierLabel = NSTextField(labelWithString: "指针灵敏度 ×1.00")
-        multiplierSlider = NSSlider(value: 1, min: 0.2, max: 8.0,
+        multiplierSlider = NSSlider(value: 1, minValue: 0.2, maxValue: 8.0,
                                     target: self, action: #selector(multiplierChanged(_:)))
         multiplierSlider.translatesAutoresizingMaskIntoConstraints = false
         multiplierSlider.widthAnchor.constraint(equalToConstant: 280).isActive = true
@@ -232,13 +250,31 @@ final class SettingsWindow: NSObject {
         dpiRow.orientation = .horizontal
         dpiRow.spacing = 8
 
+        pollHzPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+        pollHzPopUp.target = self
+        pollHzPopUp.action = #selector(pollHzChanged(_:))
+        pollHzPopUp.addItem(withTitle: "默认（1000 Hz）")
+        pollHzPopUp.lastItem?.representedObject = 0.0
+        for hz in Self.pollHzOptions {
+            pollHzPopUp.addItem(withTitle: "\(Int(hz)) Hz")
+            pollHzPopUp.lastItem?.representedObject = hz
+        }
+        let pollRow = NSStackView(views: [NSTextField(labelWithString: "鼠标回报率"), pollHzPopUp])
+        pollRow.orientation = .horizontal
+        pollRow.spacing = 8
+
+        pollHintLabel = NSTextField(labelWithString: "加速手感与 Windows 不一致时，尝试改选回报率（2.4G 无线鼠标常为 125Hz）")
+        pollHintLabel.font = .systemFont(ofSize: 11)
+        pollHintLabel.textColor = .secondaryLabelColor
+
         curveView = CurveGraphView()
         curveView.translatesAutoresizingMaskIntoConstraints = false
         curveView.heightAnchor.constraint(equalToConstant: 190).isActive = true
         curveView.gainAt = { v in
             let s = Settings.shared
             return TransferFunction(mode: .windowsCurve, multiplier: 1,
-                                    dpi: s.dpi, dpiCompensation: s.dpiCompensation).gain(speed: v)
+                                    dpi: s.dpi, dpiCompensation: s.dpiCompensation,
+                                    pollHz: s.effectivePollHz).gain(speed: v)
         }
 
         monitorLabel = NSTextField(labelWithString: "移动鼠标查看实时速度与增益")
@@ -250,9 +286,9 @@ final class SettingsWindow: NSObject {
         let stack = NSStackView(views: [
             section("状态"), statusRow,
             sep1,
-            section("指针"), enableCheck, modeSegments,
+            section("指针"), enableCheck, mouseOnlyCheck, modeSegments,
             multiplierLabel, multiplierSlider,
-            dpiAnchorCheck, dpiRow,
+            dpiAnchorCheck, dpiRow, pollRow, pollHintLabel,
             sep2,
             section("曲线（实时）"), curveView, monitorLabel,
             hintLabel("校准：同一只鼠标、同样 DPI，两台电脑上移动相同手上距离，调“指针灵敏度”到光标行程一致。先中速校准，再验证慢速与快速甩动。"),
@@ -264,7 +300,7 @@ final class SettingsWindow: NSObject {
 
     private func makeScrollPage() -> NSView {
         scrollSpeedLabel = NSTextField(labelWithString: "滚轮速度 ×1.00")
-        scrollSpeedSlider = NSSlider(value: 1, min: 0.25, max: 8.0,
+        scrollSpeedSlider = NSSlider(value: 1, minValue: 0.25, maxValue: 8.0,
                                      target: self, action: #selector(scrollSpeedChanged(_:)))
         scrollSpeedSlider.translatesAutoresizingMaskIntoConstraints = false
         scrollSpeedSlider.widthAnchor.constraint(equalToConstant: 280).isActive = true
@@ -369,6 +405,7 @@ final class SettingsWindow: NSObject {
         guard window != nil else { return }
         let s = Settings.shared
         enableCheck.state = s.enabled ? .on : .off
+        mouseOnlyCheck.state = s.mouseOnly ? .on : .off
         modeSegments.selectedSegment = (s.mode == .windowsCurve) ? 0 : 1
         multiplierSlider.doubleValue = s.multiplier
         multiplierLabel.stringValue = String(format: "指针灵敏度 ×%.2f", s.multiplier)
@@ -380,6 +417,13 @@ final class SettingsWindow: NSObject {
             abs($0.element - s.dpi) < abs($1.element - s.dpi)
         })?.offset {
             dpiPopUp.selectItem(at: idx)
+        }
+        if s.pollHz == 0 {
+            pollHzPopUp.selectItem(at: 0)
+        } else if let idx = Self.pollHzOptions.enumerated().min(by: {
+            abs($0.element - s.pollHz) < abs($1.element - s.pollHz)
+        })?.offset {
+            pollHzPopUp.selectItem(at: idx + 1)
         }
         scrollSpeedSlider.doubleValue = s.scrollSpeed
         scrollSpeedLabel.stringValue = String(format: "滚轮速度 ×%.2f", s.scrollSpeed)

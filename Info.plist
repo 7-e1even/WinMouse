@@ -8,6 +8,8 @@
     <string>WinMouse</string>
     <key>CFBundleIdentifier</key>
     <string>com.winmouse.app</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

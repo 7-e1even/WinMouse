@@ -121,6 +121,15 @@ final class EventTap {
             return Unmanaged.passUnretained(event)
         }
 
+        // 按设备来源过滤：只接管真实鼠标（IOHID 枚举到的鼠标设备 registryID
+        // 与事件的 senderID 匹配）。触控板/绘图板/软件合成的移动原样放行，
+        // 不套曲线，也不污染速度计算与亚像素状态。
+        if settings.mouseOnly {
+            guard let sender = event.hidSenderID, MouseDevices.shared.contains(sender) else {
+                return Unmanaged.passUnretained(event)
+            }
+        }
+
         let dx = Double(event.getIntegerValueField(.mouseEventDeltaX))
         let dy = Double(event.getIntegerValueField(.mouseEventDeltaY))
         guard dx != 0 || dy != 0 else { return Unmanaged.passUnretained(event) }
@@ -146,12 +155,10 @@ final class EventTap {
         me.remX = rawX - outX
         me.remY = rawY - outY
 
-        let ix = min(max(Int(outX), -10000), 10000)
-        let iy = min(max(Int(outY), -10000), 10000)
+        let ix = min(max(Int64(outX), -10000), 10000)
+        let iy = min(max(Int64(outY), -10000), 10000)
         event.setIntegerValueField(.mouseEventDeltaX, value: ix)
         event.setIntegerValueField(.mouseEventDeltaY, value: iy)
-        event.setDoubleValueField(.mouseEventPixelDeltaX, value: Double(ix))
-        event.setDoubleValueField(.mouseEventPixelDeltaY, value: Double(iy))
 
         return Unmanaged.passUnretained(event)
     }
@@ -192,11 +199,11 @@ final class EventTap {
     }
 
     /// 增量缩放 + 余量累加，返回可写入整数字段的新值
-    private static func scaled(_ v: Double, _ m: Double, _ sign: Double, _ rem: inout Double) -> Int {
+    private static func scaled(_ v: Double, _ m: Double, _ sign: Double, _ rem: inout Double) -> Int64 {
         rem += v * m * sign
         let out = rem.rounded(.towardZero)
         rem -= out
-        return min(max(Int(out), -10000), 10000)
+        return min(max(Int64(out), -10000), 10000)
     }
 
     // MARK: 侧键

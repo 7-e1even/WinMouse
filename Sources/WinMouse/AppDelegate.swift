@@ -18,16 +18,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.menu = buildMenu()
+        MouseDevices.shared.start()
 
         // 首次启动弹一次系统授权提示；之后轮询，用户勾选后自动开始工作
         if !AXIsProcessTrusted() {
             let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as NSDictionary
             _ = AXIsProcessTrustedWithOptions(opts)
+            // 未授权时直接展示设置窗口：用户第一眼能看到状态与授权入口
+            SettingsWindow.shared.show()
         }
         refreshState()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.refreshState()
         }
+    }
+
+    /// 再次打开 .app（已运行时）→ 唤出设置窗口；刘海屏挤掉菜单栏图标时的兜底入口
+    func applicationShouldHandleReopen(_ application: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        SettingsWindow.shared.show()
+        return true
     }
 
     // MARK: - 菜单栏
@@ -67,7 +76,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if trusted { EventTap.shared.start() }
 
         let running = trusted && EventTap.shared.isRunning
-        statusItem.button?.title = running ? "🖱️" : "⚠️"
+        // SF Symbols 模板图：随菜单栏深浅色自适应；取不到时回退 emoji
+        let symbolName = running ? "computermouse" : "exclamationmark.triangle"
+        if let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: "WinMouse") {
+            symbol.isTemplate = true
+            statusItem.button?.image = symbol
+            statusItem.button?.title = ""
+        } else {
+            statusItem.button?.image = nil
+            statusItem.button?.title = running ? "🖱️" : "⚠️"
+        }
 
         let s = Settings.shared
         enableItem.state = s.enabled ? .on : .off
