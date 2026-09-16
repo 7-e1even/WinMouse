@@ -1,0 +1,37 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & package (arm64 + x86_64)
+        run: |
+          chmod +x scripts/make_app.sh
+          MAKE_APP_ARCHS="arm64 x86_64" ./scripts/make_app.sh
+
+      - name: Verify
+        run: |
+          lipo -info build/WinMouse.app/Contents/MacOS/WinMouse
+          codesign -dv build/WinMouse.app 2>&1 | head -4
+
+      - name: Zip
+        run: ditto -c -k --sequesterRsrc --keepParent build/WinMouse.app build/WinMouse-macOS-universal.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinMouse-macOS-universal
+          path: build/WinMouse-macOS-universal.zip
+
+      - name: Release on tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/WinMouse-macOS-universal.zip
