@@ -1,7 +1,7 @@
 import Foundation
 
 /// 全局设置，UserDefaults 持久化。
-/// 事件 tap 回调与 UI 均在主线程访问，无需加锁。
+/// UserDefaults 本身线程安全：UI 在主线程读写，事件 tap 在专用事件线程读取，无需额外加锁。
 final class Settings {
     static let shared = Settings()
     private let d = UserDefaults.standard

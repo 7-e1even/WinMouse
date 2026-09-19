@@ -8,38 +8,109 @@ import Foundation
 /// - 滚轮：速度倍率 + 方向反转（只处理滚轮离散滚动，触控板连续滚动不动）—— Mos 核心
 /// - 侧键：X1/X2 重映射为 前进/后退（⌘[ / ⌘]）—— Mac Mouse Fix 核心
 ///
+/// 线程模型（跟手的关键）：
+/// tap 不挂在主线程，而是跑在专用事件线程（userInteractive QoS）上，
+/// 设置窗口动画、菜单、权限轮询定时器都阻塞不了鼠标事件。
+/// - start()/stop()/isRunning：仅主线程调用
+/// - port/source、逐事件速度与亚像素余量：仅事件线程访问
+/// - lastSpeed/lastEventUptime：事件线程写、主线程读（NSLock 保护）
+///
 /// 前提：系统设置 → 鼠标 → 高级 → 关闭"指针加速"。
 /// 这样到达 tap 的增量才是线性的，这里的增益才是唯一生效的曲线。
 final class EventTap {
     static let shared = EventTap()
     private init() {}
 
+    // 仅事件线程访问（stop 的拆除块也在事件线程上执行）
     private var port: CFMachPort?
     private var source: CFRunLoopSource?
 
-    // 指针移动：逐事件瞬时速度与亚像素余量（仅主线程访问）
+    // 仅主线程访问
+    private var thread: Thread?
+    private var eventRunLoop: RunLoop?
+    private var threadDone: DispatchSemaphore?
+    private(set) var isRunning = false
+
+    // 指针移动：逐事件瞬时速度与亚像素余量（仅事件线程访问）
     private var lastTimestamp: UInt64 = 0
     private var speed: Double = 0
     private var remX: Double = 0
     private var remY: Double = 0
 
-    /// 最近一次移动事件的速度与时间（供设置窗口实时监测，仅主线程访问）
-    private(set) var lastSpeed: Double = 0
-    private(set) var lastEventUptime: TimeInterval = 0
+    // 最近一次移动事件的速度与时间（供设置窗口实时监测）
+    private let monitorLock = NSLock()
+    private var monitorSpeed: Double = 0
+    private var monitorUptime: TimeInterval = 0
 
-    // 滚轮：行/像素增量的缩放余量
+    // 滚轮：行/像素增量的缩放余量（仅事件线程访问）
     private var remLineV = 0.0
     private var remLineH = 0.0
     private var remPxV = 0.0
     private var remPxH = 0.0
 
-    var isRunning: Bool { port != nil }
-
     /// 无辅助功能权限时返回 false
     @discardableResult
     func start() -> Bool {
-        guard port == nil else { return true }
+        guard thread == nil else { return true }
 
+        let ready = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
+        var tapCreated = false
+
+        let t = Thread { [weak self] in
+            guard let self else { return }
+            let rl = RunLoop.current
+            rl.add(Port(), forMode: .common) // 保活：无事件源时 RunLoop 也不退出
+            tapCreated = self.installTap(on: rl)
+            self.eventRunLoop = rl
+            ready.signal()
+            guard tapCreated else { return }
+            CFRunLoopRun() // 直到 stop() 在本线程拆除 tap 并 CFRunLoopStop
+            done.signal()
+        }
+        t.name = "winmouse.event-tap"
+        t.qualityOfService = .userInteractive
+        t.start()
+        ready.wait()
+        threadDone = done
+
+        guard tapCreated else {
+            threadDone = nil
+            eventRunLoop = nil
+            return false
+        }
+        thread = t
+        isRunning = true
+        return true
+    }
+
+    func stop() {
+        guard thread != nil, let rl = eventRunLoop else { return }
+        thread = nil
+        eventRunLoop = nil
+        isRunning = false
+
+        // FIFO：先在事件线程上拆 tap 并复位状态，再停 RunLoop，
+        // 保证拆除不会与正在执行的回调竞争
+        let cfRL = rl.getCFRunLoop()
+        CFRunLoopPerformBlock(cfRL, CFRunLoopMode.commonModes.rawValue) { [weak self] in
+            guard let self else { return }
+            if let source = self.source { CFRunLoopRemoveSource(cfRL, source, .commonModes) }
+            if let port = self.port { CFMachPortInvalidate(port) }
+            self.source = nil
+            self.port = nil
+            self.resetState()
+        }
+        CFRunLoopPerformBlock(cfRL, CFRunLoopMode.commonModes.rawValue) {
+            CFRunLoopStop(cfRL)
+        }
+        CFRunLoopWakeUp(cfRL)
+        threadDone?.wait()
+        threadDone = nil
+    }
+
+    /// 在调用线程（事件线程）的 RunLoop 上创建并挂载 tap
+    private func installTap(on rl: RunLoop) -> Bool {
         let mask: CGEventMask =
             (1 << CGEventType.mouseMoved.rawValue)
             | (1 << CGEventType.leftMouseDragged.rawValue)
@@ -62,33 +133,49 @@ final class EventTap {
 
         port = tap
         source = CFMachPortCreateRunLoopSource(nil, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CFRunLoopAddSource(rl.getCFRunLoop(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         return true
     }
 
-    func stop() {
-        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
-        if let port { CFMachPortInvalidate(port) }
-        source = nil
-        port = nil
-        resetState()
-    }
-
+    /// 仅在事件线程调用（stop 的拆除块 / 暂停接管时）
     private func resetState() {
         lastTimestamp = 0
         speed = 0
-        lastSpeed = 0
-        lastEventUptime = 0
         remX = 0
         remY = 0
         remLineV = 0
         remLineH = 0
         remPxV = 0
         remPxH = 0
+        monitorLock.lock()
+        monitorSpeed = 0
+        monitorUptime = 0
+        monitorLock.unlock()
     }
 
-    // MARK: - 事件处理（C 回调上下文，只能访问静态成员）
+    // MARK: - 监测快照（主线程读）
+
+    var lastSpeed: Double {
+        monitorLock.lock()
+        defer { monitorLock.unlock() }
+        return monitorSpeed
+    }
+
+    var lastEventUptime: TimeInterval {
+        monitorLock.lock()
+        defer { monitorLock.unlock() }
+        return monitorUptime
+    }
+
+    private func updateMonitor(speed: Double) {
+        monitorLock.lock()
+        monitorSpeed = speed
+        monitorUptime = ProcessInfo.processInfo.systemUptime
+        monitorLock.unlock()
+    }
+
+    // MARK: - 事件处理（C 回调上下文，只能访问静态成员；运行在事件线程）
 
     private static func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         let me = shared
@@ -144,8 +231,7 @@ final class EventTap {
         me.lastTimestamp = t
 
         let g = settings.transferFunction.gain(speed: me.speed)
-        me.lastSpeed = me.speed
-        me.lastEventUptime = ProcessInfo.processInfo.systemUptime
+        me.updateMonitor(speed: me.speed)
 
         // 亚像素余量累加（对应微软文档的 subpixilation）：慢速低增益下不丢步、不抖动
         let rawX = dx * g + me.remX

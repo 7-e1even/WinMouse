@@ -28,6 +28,7 @@
   | 5 | 40.0 | 443.75 | ×2.54 |
 
 - **纯线性模式**（EPP 关 · 游戏手感）：固定增益，纯 1:1 映射。
+- **低延迟接管**：事件 tap 运行在专用事件线程（`userInteractive` QoS），与 UI 主线程完全隔离（做法同 LinearMouse 的 EventThread）——设置窗口动画、菜单、权限轮询都不会阻塞鼠标事件，主线程卡顿不再影响跟手。
 
 ## 构建与打包（在 Mac 上）
 
@@ -78,7 +79,7 @@ WinMouse/
     ├── main.swift            # 入口，菜单栏应用
     ├── AppDelegate.swift     # 菜单栏、权限轮询、登录项
     ├── Core/                 # 鼠标逻辑
-    │   ├── EventTap.swift        # CGEventTap 接管：移动增益 + 滚轮缩放/反转 + 侧键映射
+    │   ├── EventTap.swift        # CGEventTap 接管（专用事件线程）：移动增益 + 滚轮缩放/反转 + 侧键映射
     │   ├── TransferFunction.swift# Windows 五点曲线（实测常量）+ 线性模式
     │   └── Settings.swift        # UserDefaults 持久化
     └── UI/                   # 设置界面
