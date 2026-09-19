@@ -22,6 +22,23 @@ cp Info.plist "$APP/Contents/Info.plist"
 [ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" \
     || echo "提示：无 Resources/AppIcon.icns（可运行 swift scripts/make_icon.sh 生成），App 将无自定义图标"
 
+# 版本号写入（自动更新按数字段比较）：tag 构建用 tag（去 v 前缀），
+# 分支/本地构建 = plist 默认版本 + 短 SHA（如 1.1+dc1271d，解析时忽略 + 后缀）
+PLIST="$APP/Contents/Info.plist"
+TAG="${GITHUB_REF#refs/tags/}"
+case "$TAG" in ""|refs/*) TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true) ;; esac
+SHA=$(git rev-parse --short HEAD 2>/dev/null || echo local)
+if [ -n "$TAG" ]; then
+    VERSION="${TAG#v}"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
+        -c "Set :CFBundleVersion $VERSION" "$PLIST"
+else
+    BASE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $BASE+$SHA" \
+        -c "Set :CFBundleVersion $SHA" "$PLIST"
+fi
+echo "版本：$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+
 # 优先用固定自签证书签名：辅助功能授权锚定证书（certificate root），
 # 重新编译后不再失效。未创建证书时退回 ad-hoc（每次编译都要重新授权一次）。
 IDENTITY="WinMouse Dev"

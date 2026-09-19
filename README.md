@@ -41,9 +41,29 @@ open build/WinMouse.app
 要求：macOS 13+，Xcode Command Line Tools（`xcode-select --install`）。
 直接 `swift run` 也能跑，但只有 .app 形态开机自启才生效、辅助功能授权身份才稳定。
 
+推送或打 tag 后 GitHub Actions（`.github/workflows/build.yml`）会自动构建通用二进制并产出
+`WinMouse-macOS-universal.zip`（打 tag 时额外发布到 Releases）。tag 构建的版本号取 tag，
+分支构建为 `默认版本+短SHA`。
+
+## 自动更新
+
+- 菜单栏 → **检查更新…**；启动后与每 24 小时也会静默检查一次，发现新版本后菜单项变为
+  **下载并安装 vX.Y.Z…**，确认后自动下载、原地替换 .app 并重启。
+- 更新源为 GitHub Releases 的 `WinMouse-macOS-universal.zip`，按版本号数字段比较
+  （`v1.10` > `v1.2`）。
+- 仓库为私有时匿名 API 不可用，自动回退本机 `gh` CLI（`brew install gh && gh auth login`）；
+- 辅助功能授权锚定签名身份：CI 默认 ad-hoc 签名，每次更新后需重新勾选授权。
+  一次性配置后可消除——本地导出证书并写入 secrets，CI 即用与本地相同的自签证书签名：
+
+  ```bash
+  scripts/export_cert.sh                                  # 导出证书（make_cert.sh 创建的那张）
+  gh secret set WINMOUSE_DEV_P12 < build/winmouse-dev.p12.b64
+  gh secret set WINMOUSE_DEV_PASSWORD -b 'winmouse-dev'
+  ```
+
 ## 应用界面
 
-- **菜单栏**：🖱️ 图标（未授权时 ⚠️），快捷开关启用状态、切换曲线模式、开机自启、打开设置、退出
+- **菜单栏**：🖱️ 图标（未授权时 ⚠️），快捷开关启用状态、切换曲线模式、开机自启、打开设置、检查更新、退出
 - **设置窗口**（菜单栏 → 设置…），分页式：
   - **指针**：运行状态（未授权时显示授权按钮）、启用开关、曲线模式（Windows 曲线 / 纯线性）、指针灵敏度、400dpi 锚定开关与 DPI、**实时曲线图**（对数速度轴上的归一化增益形状 + 控制点 + 当前速度红点）、**实时速度与增益监测**、校准提示
   - **滚轮与按键**：滚轮速度倍率、方向反转、侧键 X1/X2 → 前进/后退
@@ -70,8 +90,9 @@ WinMouse/
 ├── Package.swift
 ├── Info.plist                # .app 包配置（LSUIElement 菜单栏应用、bundle id、版本）
 ├── scripts/
-│   ├── make_app.sh           # 一键打包 build/WinMouse.app（优先用自签证书签名）
+│   ├── make_app.sh           # 一键打包 build/WinMouse.app（写入版本号；优先用自签证书签名）
 │   ├── make_cert.sh          # 创建自签代码签名证书（每台机器一次，重编译不丢授权）
+│   ├── export_cert.sh        # 导出证书为 base64 → 配置 GitHub secrets（CI 同证书签名）
 │   ├── read_curve.ps1        # 在 Windows 上重新导出注册表曲线（如有改动）
 │   └── verify_curve.ps1      # 打印增益表，验证曲线数学与 Swift 实现一致
 ├── reference/                # 参考用开源实现克隆（已被 .gitignore 排除）
@@ -81,6 +102,7 @@ WinMouse/
     ├── Core/                 # 鼠标逻辑
     │   ├── EventTap.swift        # CGEventTap 接管（专用事件线程）：移动增益 + 滚轮缩放/反转 + 侧键映射
     │   ├── TransferFunction.swift# Windows 五点曲线（实测常量）+ 线性模式
+    │   ├── Updater.swift         # 自动更新：检查 GitHub Releases（私有仓库回退 gh）→ 下载 → 替换 .app → 重启
     │   └── Settings.swift        # UserDefaults 持久化
     └── UI/                   # 设置界面
         ├── SettingsWindow.swift  # 设置窗口：三页 + 实时监测

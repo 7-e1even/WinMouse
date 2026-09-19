@@ -6,12 +6,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private var pollTimer: Timer?
+    private var updateTimer: Timer?
 
     // 菜单项（refreshState 更新勾选态）
     private let enableItem = NSMenuItem()
     private let curveItem = NSMenuItem()
     private let linearItem = NSMenuItem()
     private let loginItem = NSMenuItem()
+    private let updateItem = NSMenuItem()
+
+    // 更新状态：pendingRelease 非空时菜单项变为"下载并安装 vX.Y.Z"
+    private var pendingRelease: Updater.Release?
+    private var updateBusy = false
 
     // MARK: - 生命周期
 
@@ -30,6 +36,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshState()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.refreshState()
+        }
+
+        // 自动检查更新：启动 5 秒后一次，之后每 6 小时看一次是否距上次满 24h
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.autoCheckUpdate()
+        }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            self?.autoCheckUpdate()
         }
     }
 
@@ -53,13 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configure(loginItem, "开机自启", #selector(toggleLogin(_:)))
         let authItem = NSMenuItem()
         configure(authItem, "授权辅助功能…", #selector(openAuthPane(_:)))
+        configure(updateItem, "检查更新…", #selector(updateClicked(_:)))
         let quitItem = NSMenuItem()
         configure(quitItem, "退出 WinMouse", #selector(quit(_:)))
 
         menu.items = [
             enableItem, .separator(),
             curveItem, linearItem, .separator(),
-            settingsItem, loginItem, authItem, .separator(),
+            settingsItem, loginItem, authItem, updateItem, .separator(),
             quitItem,
         ]
         return menu
@@ -142,5 +157,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit(_ sender: Any?) {
         EventTap.shared.stop()
         NSApp.terminate(nil)
+    }
+
+    // MARK: - 自动更新
+
+    /// 静默检查：只在有新版本时改菜单项标题，不打扰
+    private func autoCheckUpdate() {
+        guard pendingRelease == nil, !updateBusy else { return }
+        Task {
+            guard Updater.shared.dueForAutoCheck() else { return }
+            Updater.shared.markAutoChecked()
+            guard let rel = try? await Updater.shared.fetchLatest(),
+                  Updater.isVersion(rel.version, newerThan: Updater.shared.currentVersion)
+            else { return }
+            await MainActor.run {
+                pendingRelease = rel
+                updateItem.title = "下载并安装 \(rel.tag)…"
+            }
+        }
+    }
+
+    @objc private func updateClicked(_ sender: Any?) {
+        // 已发现新版本 → 直接进入下载安装
+        if let rel = pendingRelease {
+            askAndInstall(rel)
+            return
+        }
+        guard !updateBusy else { return }
+        updateBusy = true
+        updateItem.title = "正在检查…"
+        Task {
+            do {
+                guard let rel = try await Updater.shared.fetchLatest(),
+                      Updater.isVersion(rel.version, newerThan: Updater.shared.currentVersion)
+                else {
+                    await MainActor.run {
+                        updateBusy = false
+                        updateItem.title = "检查更新…"
+                        alert("已是最新版本", "当前版本 \(Updater.shared.currentVersionDisplay)")
+                    }
+                    return
+                }
+                await MainActor.run {
+                    updateBusy = false
+                    pendingRelease = rel
+                    updateItem.title = "下载并安装 \(rel.tag)…"
+                    askAndInstall(rel)
+                }
+            } catch {
+                await MainActor.run {
+                    updateBusy = false
+                    updateItem.title = "检查更新…"
+                    alert("检查更新失败", error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func askAndInstall(_ rel: Updater.Release) {
+        let a = NSAlert()
+        a.messageText = "发现新版本 \(rel.tag)"
+        a.informativeText = rel.notes.isEmpty
+            ? "是否下载并重启以完成更新？"
+            : "\(rel.notes)\n\n是否下载并重启以完成更新？"
+        a.addButton(withTitle: "立即更新")
+        a.addButton(withTitle: "稍后")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        // swift run 方式没有 .app 包结构，无法自我替换
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            alert("无法自动更新", "当前以 swift run 方式运行，请使用打包后的 WinMouse.app。")
+            return
+        }
+        guard !updateBusy else { return }
+        updateBusy = true
+        updateItem.title = "正在下载…"
+        Task {
+            do {
+                let zip = try await Updater.shared.download(rel)
+                try await Updater.shared.install(from: zip) // 成功路径在 install 内完成重启
+            } catch {
+                await MainActor.run {
+                    updateBusy = false
+                    updateItem.title = "下载并安装 \(rel.tag)…"
+                    alert("更新失败", error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func alert(_ title: String, _ text: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        a.runModal()
     }
 }
