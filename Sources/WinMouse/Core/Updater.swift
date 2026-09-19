@@ -60,7 +60,7 @@ final class Updater {
     }
 
     var currentVersion: [Int] {
-        parseVersion(currentVersionDisplay)
+        Updater.parseVersion(currentVersionDisplay)
     }
 
     var currentVersionDisplay: String {
@@ -156,7 +156,7 @@ final class Updater {
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: work) }
 
-        let (dittoCode, _, dittoErr) = try await Self.run(
+        let (dittoCode, _, _) = try await Self.run(
             "/usr/bin/ditto", ["-x", "-k", "--sequesterRsrc", zip.path, work.path])
         guard dittoCode == 0 else {
             throw UpdateError.badPackage
