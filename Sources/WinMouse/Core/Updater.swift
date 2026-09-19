@@ -19,7 +19,7 @@ final class Updater {
         let notes: String
         /// 公开仓库的资产直链；经 gh 获取（私有仓库）时为 nil，下载走 gh
         let assetURL: URL?
-        var version: [Int] { parseVersion(tag) }
+        var version: [Int] { Updater.parseVersion(tag) }
     }
 
     enum UpdateError: LocalizedError {
@@ -51,9 +51,12 @@ final class Updater {
 
     static func isVersion(_ a: [Int], newerThan b: [Int]) -> Bool {
         let n = max(a.count, b.count)
-        let pa = a + [Int](repeating: 0, count: n - a.count)
-        let pb = b + [Int](repeating: 0, count: n - b.count)
-        return pa > pb
+        for i in 0..<n {
+            let x = i < a.count ? a[i] : 0
+            let y = i < b.count ? b[i] : 0
+            if x != y { return x > y }
+        }
+        return false
     }
 
     var currentVersion: [Int] {
@@ -177,7 +180,7 @@ final class Updater {
         do {
             try fm.moveItem(at: newApp, to: cur)
         } catch {
-            try? fm.moveItem(at: old, back: cur)
+            try? fm.moveItem(at: old, to: cur)
             throw UpdateError.cannotReplace(cur.path)
         }
         relaunch(at: cur, cleanup: old)
