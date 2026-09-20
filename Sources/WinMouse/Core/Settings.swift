@@ -78,8 +78,8 @@ final class Settings {
         set { d.set(newValue, forKey: Key.dpiCompensation) }
     }
 
-    /// 鼠标回报率 Hz；0 = 默认 1000。曲线 X 轴按每次上报计数折算，
-    /// 回报率选错会让加速段整体偏移（2.4G 无线鼠标常为 125Hz）
+    /// 鼠标回报率 Hz；0 = 自动按 HID 事件间隔估计。曲线 X 轴按每次上报计数折算，
+    /// 手动值适合事件间隔不稳定的无线鼠标。
     var pollHz: Double {
         get {
             let v = d.double(forKey: Key.pollHz)
@@ -88,14 +88,14 @@ final class Settings {
         set { d.set(newValue, forKey: Key.pollHz) }
     }
 
-    /// 生效回报率
+    /// 静态曲线图使用的回报率（自动模式没有实时事件样本）
     var effectivePollHz: Double {
         pollHz > 0 ? pollHz : 1000
     }
 
     var transferFunction: TransferFunction {
         TransferFunction(mode: mode, multiplier: multiplier, dpi: dpi,
-                         dpiCompensation: dpiCompensation, pollHz: effectivePollHz)
+                         dpiCompensation: dpiCompensation, pollHz: pollHz)
     }
 
     // MARK: 滚轮

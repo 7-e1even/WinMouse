@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// 会话级事件 tap：接管鼠标事件，套用 Windows 传递函数后放行。
+/// HID 级事件 tap：在 WindowServer 处理前接管鼠标事件，套用 Windows 传递函数后放行。
 ///
 /// 模块（对应三个开源项目的核心功能）：
 /// - 指针移动：Windows 曲线/线性增益 —— LinearMouse 核心
@@ -125,7 +125,7 @@ final class EventTap {
             | (1 << CGEventType.otherMouseUp.rawValue)
 
         guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
+            tap: .cghidEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
@@ -240,11 +240,14 @@ final class EventTap {
         // 0.1ms 下限只防止同批事件时间戳相同导致的除零
         let t = event.timestamp
         let magnitude = (dx * dx + dy * dy).squareRoot()
-        let expectedDtMs = 1000.0 / min(max(settings.transferFunction.pollHz, 125), 8000)
+        let configuredPollHz = settings.transferFunction.pollHz > 0
+            ? settings.transferFunction.pollHz : 1000
+        let expectedDtMs = 1000.0 / min(max(configuredPollHz, 125), 8000)
+        var sampleDtMs = expectedDtMs
         if me.lastTimestamp != 0, t > me.lastTimestamp {
             let dtMs = Double(t - me.lastTimestamp) / 1_000_000
             // 静止后的第一批移动不应把空档时间算进速度；Windows 按报告周期处理。
-            let sampleDtMs = dtMs > max(20, expectedDtMs * 4) ? expectedDtMs : max(dtMs, 0.1)
+            sampleDtMs = dtMs > max(20, expectedDtMs * 4) ? expectedDtMs : max(dtMs, 0.1)
             me.speed = magnitude / sampleDtMs
         } else {
             // tap 刚启动或状态刚重置时，也按一个报告周期估算首个事件。
@@ -252,7 +255,7 @@ final class EventTap {
         }
         me.lastTimestamp = t
 
-        let g = settings.transferFunction.gain(speed: me.speed)
+        let g = settings.transferFunction.gain(speed: me.speed, sampleIntervalMs: sampleDtMs)
         me.updateMonitor(speed: me.speed)
 
         // 亚像素余量累加（对应微软文档的 subpixilation）：慢速低增益下不丢步、不抖动

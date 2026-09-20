@@ -253,7 +253,7 @@ final class SettingsWindow: NSObject {
         pollHzPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
         pollHzPopUp.target = self
         pollHzPopUp.action = #selector(pollHzChanged(_:))
-        pollHzPopUp.addItem(withTitle: "默认（1000 Hz）")
+        pollHzPopUp.addItem(withTitle: "自动（按 HID 事件）")
         pollHzPopUp.lastItem?.representedObject = 0.0
         for hz in Self.pollHzOptions {
             pollHzPopUp.addItem(withTitle: "\(Int(hz)) Hz")
@@ -263,7 +263,7 @@ final class SettingsWindow: NSObject {
         pollRow.orientation = .horizontal
         pollRow.spacing = 8
 
-        pollHintLabel = NSTextField(labelWithString: "加速手感与 Windows 不一致时，尝试改选回报率（2.4G 无线鼠标常为 125Hz）")
+        pollHintLabel = NSTextField(labelWithString: "默认按 HID 事件间隔自动匹配；无线事件抖动时可手动选择回报率")
         pollHintLabel.font = .systemFont(ofSize: 11)
         pollHintLabel.textColor = .secondaryLabelColor
 
@@ -327,7 +327,7 @@ final class SettingsWindow: NSObject {
 
     private func makeAboutPage() -> NSView {
         let about = NSTextField(labelWithString:
-            "WinMouse v1.3\n\n" +
+            "WinMouse v1.4\n\n" +
             "把 Windows 鼠标手感搬到 macOS。\n" +
             "加速曲线取自你的 Windows 注册表（SmoothMouseXCurve/YCurve，五点实测值），\n" +
             "逐事件瞬时速度求增益，与 Windows 行为一致；\n" +

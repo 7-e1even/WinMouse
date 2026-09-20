@@ -54,17 +54,20 @@ struct TransferFunction {
     /// false（默认）= Windows 原生行为：曲线吃原始计数，高 DPI 鼠标更早进入加速段；
     /// true = 把每报计数折算回 400dpi 设计基准（拐点按手速固定）
     var dpiCompensation: Bool
-    /// 鼠标回报率 Hz（125–8000），把 counts/ms 折算成"每次上报计数"用于曲线求值
+    /// 鼠标回报率 Hz（125–8000）；0 表示按 HID 事件间隔自动估计
     var pollHz: Double = 1000
 
     /// - Parameter speed: 瞬时鼠标速度，counts/ms（逐事件计算，与 Windows 一致不做平滑）
     /// - Returns: 施加在原始位移上的总增益
-    func gain(speed: Double) -> Double {
+    func gain(speed: Double, sampleIntervalMs: Double? = nil) -> Double {
         switch mode {
         case .linear:
             return multiplier
         case .windowsCurve:
-            var x = speed * (1000.0 / min(max(pollHz, 125), 8000)) / 3.5
+            let rate = pollHz > 0
+                ? min(max(pollHz, 125), 8000)
+                : 1000.0 / max(sampleIntervalMs ?? 1, 0.125)
+            var x = speed * (1000.0 / min(max(rate, 125), 8000)) / 3.5
             if dpiCompensation {
                 x *= 400.0 / max(dpi, 100.0)
             }

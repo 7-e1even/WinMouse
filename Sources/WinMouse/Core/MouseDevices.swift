@@ -28,8 +28,8 @@ extension CGEvent {
 /// 内置触控板走私有 usage（vendor-defined），不在集合内——其移动事件原样放行；
 /// 蓝牙/2.4G 接收器鼠标按标准鼠标 usage 枚举，正常接管。
 ///
-/// 注：回报率自动检测（IOHIDManagerRegisterInputValueCallback）在无输入监控权限的
-/// 环境下收不到回调（实测 12s 零事件），故回报率由用户在设置中选择。
+/// 注：不依赖 IOHIDManagerRegisterInputValueCallback 检测回报率；该回调在无输入监控
+/// 权限时可能收不到事件，实际回报率由 HID 事件时间戳自动估计或由用户手动指定。
 final class MouseDevices {
     static let shared = MouseDevices()
     private init() {}
