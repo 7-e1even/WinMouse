@@ -46,6 +46,7 @@ jobs:
         run: ditto -c -k --sequesterRsrc --keepParent build/WinMouse.app build/WinMouse-macOS-universal.zip
 
       - name: Upload artifact
+        continue-on-error: true # artifact 配额耗尽时仍应继续创建 Release
         uses: actions/upload-artifact@v4
         with:
           name: WinMouse-macOS-universal
