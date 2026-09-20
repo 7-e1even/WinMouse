@@ -327,7 +327,7 @@ final class SettingsWindow: NSObject {
 
     private func makeAboutPage() -> NSView {
         let about = NSTextField(labelWithString:
-            "WinMouse v1.1\n\n" +
+            "WinMouse v1.3\n\n" +
             "把 Windows 鼠标手感搬到 macOS。\n" +
             "加速曲线取自你的 Windows 注册表（SmoothMouseXCurve/YCurve，五点实测值），\n" +
             "逐事件瞬时速度求增益，与 Windows 行为一致；\n" +

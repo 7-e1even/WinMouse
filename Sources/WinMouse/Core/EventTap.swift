@@ -48,6 +48,10 @@ final class EventTap {
     private var remPxV = 0.0
     private var remPxH = 0.0
 
+    // 设置很少变化；避免高回报率下每个事件都读 UserDefaults。
+    private var cachedSettings: Settings.Snapshot?
+    private var cachedSettingsUptime: TimeInterval = 0
+
     /// 无辅助功能权限时返回 false
     @discardableResult
     func start() -> Bool {
@@ -175,6 +179,17 @@ final class EventTap {
         monitorLock.unlock()
     }
 
+    private func settingsSnapshot() -> Settings.Snapshot {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let cachedSettings, now - cachedSettingsUptime < 0.02 {
+            return cachedSettings
+        }
+        let fresh = Settings.shared.snapshot
+        cachedSettings = fresh
+        cachedSettingsUptime = now
+        return fresh
+    }
+
     // MARK: - 事件处理（C 回调上下文，只能访问静态成员；运行在事件线程）
 
     private static func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -202,7 +217,7 @@ final class EventTap {
     // MARK: 指针移动
 
     private static func handleMove(_ event: CGEvent, _ me: EventTap) -> Unmanaged<CGEvent>? {
-        let settings = Settings.shared
+        let settings = me.settingsSnapshot()
         guard settings.enabled else {
             me.resetState()
             return Unmanaged.passUnretained(event)
@@ -224,9 +239,16 @@ final class EventTap {
         // 瞬时速度（counts/ms）：与 Windows 一致逐事件计算，不做平滑；
         // 0.1ms 下限只防止同批事件时间戳相同导致的除零
         let t = event.timestamp
+        let magnitude = (dx * dx + dy * dy).squareRoot()
+        let expectedDtMs = 1000.0 / min(max(settings.transferFunction.pollHz, 125), 8000)
         if me.lastTimestamp != 0, t > me.lastTimestamp {
             let dtMs = Double(t - me.lastTimestamp) / 1_000_000
-            me.speed = (dx * dx + dy * dy).squareRoot() / max(dtMs, 0.1)
+            // 静止后的第一批移动不应把空档时间算进速度；Windows 按报告周期处理。
+            let sampleDtMs = dtMs > max(20, expectedDtMs * 4) ? expectedDtMs : max(dtMs, 0.1)
+            me.speed = magnitude / sampleDtMs
+        } else {
+            // tap 刚启动或状态刚重置时，也按一个报告周期估算首个事件。
+            me.speed = magnitude / expectedDtMs
         }
         me.lastTimestamp = t
 
@@ -252,7 +274,7 @@ final class EventTap {
     // MARK: 滚轮
 
     private static func handleScroll(_ event: CGEvent, _ me: EventTap) {
-        let s = Settings.shared
+        let s = me.settingsSnapshot()
         guard s.enabled, s.scrollEnabled else { return }
         // 只处理滚轮的离散滚动；触控板/平滑滚动的连续事件原样放行
         if event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0 { return }
@@ -296,7 +318,7 @@ final class EventTap {
 
     /// X1/X2（button number 3/4）→ ⌘[ / ⌘]（Safari/Chrome/Finder 的后退/前进）
     private static func handleButton(_ event: CGEvent, down: Bool) -> Unmanaged<CGEvent>? {
-        let s = Settings.shared
+        let s = shared.settingsSnapshot()
         guard s.enabled, s.remapSideButtons else { return Unmanaged.passUnretained(event) }
 
         let button = event.getIntegerValueField(.mouseEventButtonNumber)

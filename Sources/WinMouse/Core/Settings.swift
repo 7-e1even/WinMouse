@@ -7,6 +7,22 @@ final class Settings {
     private let d = UserDefaults.standard
     private init() {}
 
+    struct Snapshot {
+        let enabled: Bool
+        let mouseOnly: Bool
+        let transferFunction: TransferFunction
+        let scrollEnabled: Bool
+        let scrollSpeed: Double
+        let scrollInvert: Bool
+        let remapSideButtons: Bool
+    }
+
+    var snapshot: Snapshot {
+        Snapshot(enabled: enabled, mouseOnly: mouseOnly, transferFunction: transferFunction,
+                 scrollEnabled: scrollEnabled, scrollSpeed: scrollSpeed,
+                 scrollInvert: scrollInvert, remapSideButtons: remapSideButtons)
+    }
+
     /// UserDefaults 键名集中定义（改名会丢失已保存的设置，勿动）
     private enum Key {
         static let enabled = "winmouse.enabled"
