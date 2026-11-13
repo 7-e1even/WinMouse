@@ -13,11 +13,30 @@ import Foundation
 /// 设置窗口动画、菜单、权限轮询定时器都阻塞不了鼠标事件。
 /// - start()/stop()/isRunning：仅主线程调用
 /// - port/source、逐事件速度与亚像素余量：仅事件线程访问
-/// - lastSpeed/lastEventUptime：事件线程写、主线程读（NSLock 保护）
+/// - monitor：事件线程写、主线程读（NSLock 保护）
 ///
-/// 前提：系统设置 → 鼠标 → 高级 → 关闭"指针加速"。
-/// 这样到达 tap 的增量才是线性的，这里的增益才是唯一生效的曲线。
+/// 输入：优先读 IOHIDEvent 里 macOS 加速之前的原始计数，曲线与输出都基于它，
+/// 系统"跟踪速度"和"指针加速"不再参与。取不到原始计数时回退到系统增量，
+/// 这时需要在系统设置 → 鼠标 → 高级 → 关闭"指针加速"，避免双重加速。
 final class EventTap {
+    /// 最近一次移动事件的处理结果（供设置窗口实时监测）
+    struct MonitorSample {
+        /// 事件时间（systemUptime）；0 = 尚无事件
+        var uptime: TimeInterval = 0
+        /// 瞬时速度，counts/ms
+        var speed: Double = 0
+        /// 曲线输入：等效每次上报计数
+        var reportCounts: Double = 0
+        /// 曲线本身的增益（不含灵敏度）
+        var curveGain: Double = 0
+        /// 实际施加的总增益（含灵敏度）
+        var gain: Double = 0
+        /// true = 用的是原始计数；false = 回退到 macOS 增量
+        var rawInput = false
+        /// macOS 自身缩放：累计系统增量 / 累计原始计数；0 = 未知
+        var systemScale: Double = 0
+    }
+
     static let shared = EventTap()
     private init() {}
 
@@ -36,11 +55,12 @@ final class EventTap {
     private var speed: Double = 0
     private var remX: Double = 0
     private var remY: Double = 0
+    // macOS 自身缩放 = 累计系统增量 / 累计原始计数（累计求比值，抵消逐事件整数舍入的偏差）
+    private var scaleSysSum: Double = 0
+    private var scaleRawSum: Double = 0
 
-    // 最近一次移动事件的速度与时间（供设置窗口实时监测）
     private let monitorLock = NSLock()
-    private var monitorSpeed: Double = 0
-    private var monitorUptime: TimeInterval = 0
+    private var monitorSample = MonitorSample()
 
     // 滚轮：行/像素增量的缩放余量（仅事件线程访问）
     private var remLineV = 0.0
@@ -148,34 +168,28 @@ final class EventTap {
         speed = 0
         remX = 0
         remY = 0
+        scaleSysSum = 0
+        scaleRawSum = 0
         remLineV = 0
         remLineH = 0
         remPxV = 0
         remPxH = 0
         monitorLock.lock()
-        monitorSpeed = 0
-        monitorUptime = 0
+        monitorSample = MonitorSample()
         monitorLock.unlock()
     }
 
     // MARK: - 监测快照（主线程读）
 
-    var lastSpeed: Double {
+    var monitor: MonitorSample {
         monitorLock.lock()
         defer { monitorLock.unlock() }
-        return monitorSpeed
+        return monitorSample
     }
 
-    var lastEventUptime: TimeInterval {
+    private func updateMonitor(_ sample: MonitorSample) {
         monitorLock.lock()
-        defer { monitorLock.unlock() }
-        return monitorUptime
-    }
-
-    private func updateMonitor(speed: Double) {
-        monitorLock.lock()
-        monitorSpeed = speed
-        monitorUptime = ProcessInfo.processInfo.systemUptime
+        monitorSample = sample
         monitorLock.unlock()
     }
 
@@ -226,14 +240,40 @@ final class EventTap {
         // 按设备来源过滤：只接管真实鼠标（IOHID 枚举到的鼠标设备 registryID
         // 与事件的 senderID 匹配）。触控板/绘图板/软件合成的移动原样放行，
         // 不套曲线，也不污染速度计算与亚像素状态。
-        if settings.mouseOnly {
-            guard let sender = event.hidSenderID, MouseDevices.shared.contains(sender) else {
-                return Unmanaged.passUnretained(event)
-            }
+        let hid = event.hidPointerInfo
+        let fromMouse = hid.senderID.map { MouseDevices.shared.contains($0) } ?? false
+        if settings.mouseOnly && !fromMouse {
+            return Unmanaged.passUnretained(event)
         }
 
-        let dx = Double(event.getIntegerValueField(.mouseEventDeltaX))
-        let dy = Double(event.getIntegerValueField(.mouseEventDeltaY))
+        // macOS 处理后的增量：已乘跟踪速度，且 CGEvent 的位移字段只存整数
+        // （按浮点读写也会被截断），缩放产生的小数在到达这里之前就丢了，
+        // 慢速时还可能是 0 而绕过曲线。只作回退与诊断用。
+        let sysDx = Double(event.getIntegerValueField(.mouseEventDeltaX))
+        let sysDy = Double(event.getIntegerValueField(.mouseEventDeltaY))
+        let sysMag = (sysDx * sysDx + sysDy * sysDy).squareRoot()
+
+        // Windows 曲线要吃设备原始计数：优先用 macOS 加速/缩放之前的原始值（精确整数计数），
+        // 曲线输入和输出都基于它，系统跟踪速度、指针加速与上面的舍入都不再参与。
+        // 只对已识别的鼠标启用；数值与系统增量差得离谱（>64 倍）时视为不可信，回退。
+        var dx = sysDx
+        var dy = sysDy
+        var rawInput = false
+        if fromMouse, let raw = hid.rawDelta, raw.dx != 0 || raw.dy != 0 {
+            let rawMag = (raw.dx * raw.dx + raw.dy * raw.dy).squareRoot()
+            let ratio = sysMag / rawMag
+            if sysMag == 0 || (ratio > 1.0 / 64 && ratio < 64) {
+                dx = raw.dx
+                dy = raw.dy
+                rawInput = true
+                me.scaleSysSum += sysMag
+                me.scaleRawSum += rawMag
+                if me.scaleRawSum > 4000 { // 衰减旧样本，系统设置改动后能跟上
+                    me.scaleSysSum *= 0.5
+                    me.scaleRawSum *= 0.5
+                }
+            }
+        }
         guard dx != 0 || dy != 0 else { return Unmanaged.passUnretained(event) }
 
         // 瞬时速度（counts/ms）：与 Windows 一致逐事件计算，不做平滑；
@@ -255,8 +295,14 @@ final class EventTap {
         }
         me.lastTimestamp = t
 
-        let g = settings.transferFunction.gain(speed: me.speed, sampleIntervalMs: sampleDtMs)
-        me.updateMonitor(speed: me.speed)
+        let tf = settings.transferFunction
+        let counts = tf.reportCounts(speed: me.speed, sampleIntervalMs: sampleDtMs)
+        let g = tf.gain(reportCounts: counts)
+        me.updateMonitor(MonitorSample(uptime: ProcessInfo.processInfo.systemUptime,
+                                       speed: me.speed, reportCounts: counts,
+                                       curveGain: g / max(tf.multiplier, 0.01), gain: g,
+                                       rawInput: rawInput,
+                                       systemScale: me.scaleRawSum > 0 ? me.scaleSysSum / me.scaleRawSum : 0))
 
         // 亚像素余量累加（对应微软文档的 subpixilation）：慢速低增益下不丢步、不抖动
         let rawX = dx * g + me.remX
