@@ -177,7 +177,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func updateClicked(_ sender: Any?) {
+    /// 供设置窗口同步"检查更新"按钮（与菜单项共用同一套状态）
+    var updateStatus: (title: String, busy: Bool, available: Bool) {
+        (updateItem.title, updateBusy, pendingRelease != nil)
+    }
+
+    /// 菜单项与设置窗口"关于"页按钮共用
+    @objc func updateClicked(_ sender: Any?) {
         // 已发现新版本 → 直接进入下载安装
         if let rel = pendingRelease {
             askAndInstall(rel)

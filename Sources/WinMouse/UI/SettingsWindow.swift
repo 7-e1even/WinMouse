@@ -39,6 +39,7 @@ final class SettingsWindow: NSObject {
 
     // 关于页
     private var loginCheck: NSButton!
+    private var updateButton: NSButton!
 
     private static let dpiOptions: [Double] = [400, 800, 1200, 1600, 3200, 6400]
     private static let pollHzOptions: [Double] = [125, 250, 500, 1000, 2000, 4000, 8000]
@@ -92,6 +93,15 @@ final class SettingsWindow: NSObject {
         }
         if #available(macOS 13.0, *) {
             loginCheck.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
+        }
+
+        // 更新按钮与菜单栏"检查更新"共用状态；后台检查发现新版本时"关于"标签加红点
+        if let app = NSApp.delegate as? AppDelegate {
+            let u = app.updateStatus
+            if updateButton.title != u.title { updateButton.title = u.title }
+            updateButton.isEnabled = !u.busy
+            let tab = u.available ? "关于 ●" : "关于"
+            if tabSegments.label(forSegment: 2) != tab { tabSegments.setLabel(tab, forSegment: 2) }
         }
 
         // 实时监测：300ms 无移动事件视为静止
@@ -377,6 +387,11 @@ final class SettingsWindow: NSObject {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let title = NSTextField(labelWithString: "WinMouse" + (version.map { " v\($0)" } ?? ""))
         title.font = .systemFont(ofSize: 17, weight: .semibold)
+        updateButton = NSButton(title: "检查更新…", target: NSApp.delegate,
+                                action: #selector(AppDelegate.updateClicked(_:)))
+        updateButton.bezelStyle = .rounded
+        let titleRow = hstack(title, updateButton)
+        titleRow.spacing = 14
         let subtitle = hintLabel("把 Windows 鼠标手感搬到 macOS：指针曲线 · 滚轮增强 · 侧键映射",
                                  width: Self.width - Self.margin * 2)
         subtitle.font = .systemFont(ofSize: 12)
@@ -400,13 +415,13 @@ final class SettingsWindow: NSObject {
                               target: self, action: #selector(loginChanged(_:)))
 
         let stack = NSStackView(views: [
-            title, subtitle,
+            titleRow, subtitle,
             section("使用步骤"), steps,
             section("曲线数据"), curve,
             hstack(auth, loginCheck),
             refs,
         ])
-        stack.setCustomSpacing(4, after: title)
+        stack.setCustomSpacing(4, after: titleRow)
         stack.setCustomSpacing(18, after: subtitle)
         stack.setCustomSpacing(6, after: stack.views[2])
         stack.setCustomSpacing(16, after: steps)
